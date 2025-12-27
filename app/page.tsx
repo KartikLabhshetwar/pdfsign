@@ -1,65 +1,292 @@
-import Image from "next/image";
+"use client";
+
+import { useState, useCallback } from "react";
+import dynamic from "next/dynamic";
+
+const PDFViewer = dynamic(
+  () => import("@/components/pdf/PDFViewer").then((mod) => ({ default: mod.PDFViewer })),
+  { ssr: false }
+);
+import { PDFToolbar } from "@/components/pdf/PDFToolbar";
+import { FieldOverlay } from "@/components/pdf/FieldOverlay";
+import { SignatureModal } from "@/components/signature/SignatureModal";
+import { TextField } from "@/components/fields/TextField";
+import { DateField } from "@/components/fields/DateField";
+import { Button } from "@/components/ui/button";
+import { Upload } from "lucide-react";
+import type { Field, FieldType } from "@/lib/utils/fieldManager";
+import {
+  createField,
+  updateFieldValue,
+  getFieldsForPage,
+  deleteField,
+} from "@/lib/utils/fieldManager";
+import { processPDF } from "@/lib/pdf/pdfProcessor";
+import { getPDFPageDimensions } from "@/lib/pdf/pdfRenderer";
 
 export default function Home() {
-  return (
-    <div className="flex min-h-screen items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex min-h-screen w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
+  const [pdfFile, setPdfFile] = useState<File | null>(null);
+  const [pdfBytes, setPdfBytes] = useState<Uint8Array | null>(null);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [scale, setScale] = useState(1);
+  const [fields, setFields] = useState<Field[]>([]);
+  const [activeTool, setActiveTool] = useState<FieldType | null>(null);
+  const [selectedField, setSelectedField] = useState<Field | null>(null);
+  const [showSignatureModal, setShowSignatureModal] = useState(false);
+  const [showTextField, setShowTextField] = useState(false);
+  const [showDateField, setShowDateField] = useState(false);
+  const [pendingField, setPendingField] = useState<Field | null>(null);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [pageDimensions, setPageDimensions] = useState<{
+    width: number;
+    height: number;
+  } | null>(null);
+
+  const handleFileUpload = useCallback(
+    async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (!file || file.type !== "application/pdf") {
+        alert("Please select a valid PDF file");
+        return;
+      }
+
+      const arrayBuffer = await file.arrayBuffer();
+      const bytes = new Uint8Array(arrayBuffer);
+      setPdfBytes(bytes);
+      setPdfFile(file);
+      setCurrentPage(1);
+      setFields([]);
+      setActiveTool(null);
+      setPageDimensions(null);
+    },
+    []
+  );
+
+  const handlePageLoad = useCallback((width: number, height: number) => {
+    setPageDimensions({ width, height });
+  }, []);
+
+  const handlePageClick = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      if (!activeTool || !pdfBytes || !pageDimensions) return;
+
+      const canvasElement = document.querySelector(
+        ".react-pdf__Page__canvas"
+      ) as HTMLCanvasElement;
+      if (!canvasElement) return;
+
+      const canvasRect = canvasElement.getBoundingClientRect();
+      const clickX = e.clientX - canvasRect.left;
+      const clickY = e.clientY - canvasRect.top;
+
+      if (
+        clickX < 0 ||
+        clickY < 0 ||
+        clickX > canvasRect.width ||
+        clickY > canvasRect.height
+      ) {
+        return;
+      }
+
+      const pdfX = (clickX / canvasRect.width) * pageDimensions.width;
+      const pdfY = (clickY / canvasRect.height) * pageDimensions.height;
+
+      const field = createField(activeTool, currentPage, pdfX, pdfY);
+      setPendingField(field);
+
+      if (activeTool === "signature") {
+        setShowSignatureModal(true);
+      } else if (activeTool === "text") {
+        setShowTextField(true);
+      } else if (activeTool === "date") {
+        setShowDateField(true);
+      }
+    },
+    [activeTool, pdfBytes, pageDimensions, currentPage]
+  );
+
+  const handleSignatureSave = useCallback(
+    (signature: string) => {
+      if (pendingField) {
+        const updatedField = updateFieldValue(pendingField, signature);
+        setFields((prev) => [...prev, updatedField]);
+        setPendingField(null);
+        setShowSignatureModal(false);
+        setActiveTool(null);
+      }
+    },
+    [pendingField]
+  );
+
+  const handleTextSave = useCallback(
+    (text: string) => {
+      if (pendingField) {
+        const updatedField = updateFieldValue(pendingField, text);
+        setFields((prev) => [...prev, updatedField]);
+        setPendingField(null);
+        setShowTextField(false);
+        setActiveTool(null);
+      }
+    },
+    [pendingField]
+  );
+
+  const handleDateSave = useCallback(
+    (date: string) => {
+      if (pendingField) {
+        const updatedField = updateFieldValue(pendingField, date);
+        setFields((prev) => [...prev, updatedField]);
+        setPendingField(null);
+        setShowDateField(false);
+        setActiveTool(null);
+      }
+    },
+    [pendingField]
+  );
+
+  const handleFieldClick = useCallback((field: Field) => {
+    setSelectedField(field);
+  }, []);
+
+  const handleFieldDelete = useCallback((fieldId: string) => {
+    setFields((prev) => deleteField(prev, fieldId));
+    if (selectedField?.id === fieldId) {
+      setSelectedField(null);
+    }
+  }, [selectedField]);
+
+  const handleDownload = useCallback(async () => {
+    if (!pdfBytes || fields.length === 0) return;
+
+    setIsProcessing(true);
+    try {
+      const processedBytes = await processPDF(pdfBytes, fields);
+      const blob = new Blob([new Uint8Array(processedBytes)], { type: "application/pdf" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `signed-${pdfFile?.name || "document"}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error("Error processing PDF:", error);
+      alert("Failed to process PDF. Please try again.");
+    } finally {
+      setIsProcessing(false);
+    }
+  }, [pdfBytes, fields, pdfFile]);
+
+  const handleClearAll = useCallback(() => {
+    if (confirm("Are you sure you want to clear all fields?")) {
+      setFields([]);
+      setSelectedField(null);
+    }
+  }, []);
+
+  const currentPageFields = getFieldsForPage(fields, currentPage);
+
+  if (!pdfFile) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background">
+        <div className="text-center space-y-4">
+          <h1 className="text-3xl font-semibold">PDF Signing Tool</h1>
+          <p className="text-muted-foreground">
+            Upload a PDF to start adding signatures, text, and dates
           </p>
+          <div className="flex justify-center">
+            <label>
+              <input
+                type="file"
+                accept="application/pdf"
+                onChange={handleFileUpload}
+                className="hidden"
+              />
+              <Button asChild>
+                <span>
+                  <Upload className="size-4" />
+                  Upload PDF
+                </span>
+              </Button>
+            </label>
+          </div>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col h-screen bg-background">
+      <PDFToolbar
+        activeTool={activeTool}
+        onToolSelect={setActiveTool}
+        onDownload={handleDownload}
+        onClearAll={handleClearAll}
+        fieldCount={fields.length}
+        isProcessing={isProcessing}
+      />
+      <div className="flex-1 overflow-hidden relative">
+        <PDFViewer
+          file={pdfFile}
+          currentPage={currentPage}
+          onPageChange={(page) => {
+            setCurrentPage(page);
+            setPageDimensions(null);
+          }}
+          scale={scale}
+          onScaleChange={setScale}
+          onPageLoad={handlePageLoad}
+        >
+          {pageDimensions && (
+            <FieldOverlay
+              fields={currentPageFields}
+              pageWidth={pageDimensions.width}
+              pageHeight={pageDimensions.height}
+              scale={scale}
+              onFieldClick={handleFieldClick}
+              onFieldDelete={handleFieldDelete}
+              selectedFieldId={selectedField?.id}
             />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
+          )}
+          {activeTool && (
+            <div
+              className="absolute inset-0 cursor-crosshair z-10"
+              onClick={handlePageClick}
+            />
+          )}
+        </PDFViewer>
+      </div>
+      {showSignatureModal && (
+        <SignatureModal
+          onSave={handleSignatureSave}
+          onClose={() => {
+            setShowSignatureModal(false);
+            setPendingField(null);
+            setActiveTool(null);
+          }}
+        />
+      )}
+      {showTextField && (
+        <TextField
+          onSave={handleTextSave}
+          onCancel={() => {
+            setShowTextField(false);
+            setPendingField(null);
+            setActiveTool(null);
+          }}
+        />
+      )}
+      {showDateField && (
+        <DateField
+          onSave={handleDateSave}
+          onCancel={() => {
+            setShowDateField(false);
+            setPendingField(null);
+            setActiveTool(null);
+          }}
+        />
+      )}
     </div>
   );
 }
