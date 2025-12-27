@@ -22,7 +22,6 @@ import {
   deleteField,
 } from "@/lib/utils/fieldManager";
 import { processPDF } from "@/lib/pdf/pdfProcessor";
-import { getPDFPageDimensions } from "@/lib/pdf/pdfRenderer";
 
 export default function Home() {
   const [pdfFile, setPdfFile] = useState<File | null>(null);
@@ -70,7 +69,7 @@ export default function Home() {
     (e: React.MouseEvent<HTMLDivElement>) => {
       if (!activeTool || !pdfBytes || !pageDimensions) return;
 
-      const canvasElement = document.querySelector(
+      const canvasElement = e.currentTarget.querySelector(
         ".react-pdf__Page__canvas"
       ) as HTMLCanvasElement;
       if (!canvasElement) return;
@@ -229,6 +228,7 @@ export default function Home() {
       <div className="flex-1 overflow-hidden relative">
         <PDFViewer
           file={pdfFile}
+          pdfBytes={pdfBytes}
           currentPage={currentPage}
           onPageChange={(page) => {
             setCurrentPage(page);

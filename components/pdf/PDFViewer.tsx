@@ -1,16 +1,17 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { Document, Page, pdfjs } from "react-pdf";
+import { useState, useRef, useMemo, useEffect } from "react";
 import { ChevronLeft, ChevronRight, ZoomIn, ZoomOut } from "lucide-react";
+import { Document, Page, pdfjs } from "react-pdf";
 import { Button } from "@/components/ui/button";
 import "react-pdf/dist/Page/AnnotationLayer.css";
 import "react-pdf/dist/Page/TextLayer.css";
 
-pdfjs.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.js`;
+pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
 
 interface PDFViewerProps {
   file: File | null;
+  pdfBytes: Uint8Array | null;
   currentPage: number;
   onPageChange: (page: number) => void;
   scale: number;
@@ -21,6 +22,7 @@ interface PDFViewerProps {
 
 export function PDFViewer({
   file,
+  pdfBytes,
   currentPage,
   onPageChange,
   scale,
@@ -30,15 +32,49 @@ export function PDFViewer({
 }: PDFViewerProps) {
   const [numPages, setNumPages] = useState<number>(0);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [pageWidth, setPageWidth] = useState<number>(800);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  const pdfUrl = useMemo(() => {
+    if (!pdfBytes) return null;
+    
+    const arrayBuffer = pdfBytes.buffer.slice(
+      pdfBytes.byteOffset,
+      pdfBytes.byteOffset + pdfBytes.byteLength
+    ) as ArrayBuffer;
+    const blob = new Blob([arrayBuffer], { type: "application/pdf" });
+    return URL.createObjectURL(blob);
+  }, [pdfBytes]);
 
   useEffect(() => {
-    setLoading(true);
-  }, [file]);
+    return () => {
+      if (pdfUrl) {
+        URL.revokeObjectURL(pdfUrl);
+      }
+    };
+  }, [pdfUrl]);
 
-  function onDocumentLoadSuccess({ numPages }: { numPages: number }) {
+  const handleDocumentLoadSuccess = ({ numPages }: { numPages: number }) => {
     setNumPages(numPages);
     setLoading(false);
-  }
+    setError(null);
+  };
+
+  const handleDocumentLoadError = (error: Error) => {
+    console.error("Error loading PDF:", error);
+    setError(error.message);
+    setLoading(false);
+  };
+
+  const handlePageLoadSuccess = (page: { getViewport: (options: { scale: number }) => { width: number; height: number } }) => {
+    const viewport = page.getViewport({ scale: 1 });
+    setPageWidth(viewport.width);
+    
+    if (onPageLoad) {
+      onPageLoad(viewport.width, viewport.height);
+    }
+  };
 
   const handlePreviousPage = () => {
     if (currentPage > 1) {
@@ -60,13 +96,15 @@ export function PDFViewer({
     onScaleChange(Math.max(scale - 0.2, 0.5));
   };
 
-  if (!file) {
+  if (!file || !pdfBytes) {
     return (
       <div className="flex items-center justify-center h-full text-muted-foreground">
         <p>No PDF loaded</p>
       </div>
     );
   }
+
+  const scaledWidth = pageWidth * scale;
 
   return (
     <div className="flex flex-col h-full">
@@ -114,36 +152,45 @@ export function PDFViewer({
           </Button>
         </div>
       </div>
-      <div className="flex-1 overflow-auto bg-muted/20 p-4 flex items-start justify-center relative">
-        <div className="relative">
-          <Document
-            file={file}
-            onLoadSuccess={onDocumentLoadSuccess}
-            loading={
-              <div className="flex items-center justify-center p-8">
-                <p>Loading PDF...</p>
-              </div>
-            }
-            error={
-              <div className="flex items-center justify-center p-8 text-destructive">
-                <p>Failed to load PDF</p>
-              </div>
-            }
+      <div
+        ref={containerRef}
+        className="flex-1 overflow-auto bg-muted/20 p-4 flex items-start justify-center relative"
+      >
+        {error ? (
+          <div className="flex items-center justify-center h-full text-destructive">
+            <p>Error loading PDF: {error}</p>
+          </div>
+        ) : pdfUrl ? (
+          <div
+            className="relative shadow-lg"
+            style={{
+              transform: `scale(${scale})`,
+              transformOrigin: "top center",
+            }}
           >
-            <Page
-              pageNumber={currentPage}
-              scale={scale}
-              renderTextLayer={true}
-              renderAnnotationLayer={true}
-              className="shadow-lg"
-              onLoadSuccess={(page) => {
-                const { width, height } = page;
-                onPageLoad?.(width, height);
-              }}
-            />
-          </Document>
-          {children}
-        </div>
+            <Document
+              file={pdfUrl}
+              onLoadSuccess={handleDocumentLoadSuccess}
+              onLoadError={handleDocumentLoadError}
+              loading={
+                <div className="flex items-center justify-center p-8">
+                  <p>Loading PDF...</p>
+                </div>
+              }
+              className="react-pdf__Document"
+            >
+              <Page
+                pageNumber={currentPage}
+                width={scaledWidth}
+                onLoadSuccess={handlePageLoadSuccess}
+                renderTextLayer={true}
+                renderAnnotationLayer={true}
+                className="react-pdf__Page"
+              />
+            </Document>
+            {children}
+          </div>
+        ) : null}
       </div>
     </div>
   );

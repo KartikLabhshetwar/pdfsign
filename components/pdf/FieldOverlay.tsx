@@ -34,7 +34,7 @@ export function FieldOverlay({
 
   useEffect(() => {
     const updateDimensions = () => {
-      const canvasElement = document.querySelector(
+      const canvasElement = containerRef.current?.querySelector(
         ".react-pdf__Page__canvas"
       ) as HTMLCanvasElement;
       if (!canvasElement || !containerRef.current) return;
